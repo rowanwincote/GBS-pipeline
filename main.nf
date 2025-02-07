@@ -32,13 +32,13 @@ process bracken {
     path kreport
 
     output:
-    path "${kreport.baseName}.bracken"
+    path "${kreport.baseName}.bracken", emit: bracken_output
 
     script:
     """
     echo "Running Bracken on ${kreport}..."
     python /mnt/c/my_nextflow_work/pipeline/Bracken/src/est_abundance.py -i ${kreport} \
-        -k ${params.bracken_db}/database${params.read_len}mers.kmer_distrib \
+        -k ${params.kraken_db}/database${params.read_len}mers.kmer_distrib \
         -o ${kreport.baseName}.bracken \
         -l ${params.classification_level} -t ${params.threshold}
     """
@@ -55,9 +55,9 @@ process generate_summary_report {
     script:
     """
     echo "Generating summary of GBS abundance..." > summary_report.txt
-    for report in ${bracken_reports}; do
-        echo "Processing ${report}..." >> summary_report.txt
-        cat ${report} >> summary_report.txt
+    for report in \$(ls ${bracken_reports}); do
+        echo "Processing \${report}..." >> summary_report.txt
+        cat \${report} >> summary_report.txt
     done
     """
 }
