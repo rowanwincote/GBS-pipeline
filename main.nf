@@ -25,6 +25,7 @@ reads_ch.view { sample_id, r1, r2 -> "FOUND: Sample ${sample_id}, Read1: ${r1}, 
 // Kraken2 Process
 process kraken2 {
     tag "Kraken2"
+    maxForks 1
     input:
     tuple val(sample_id), path(read1), path(read2)
     output:
