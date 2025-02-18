@@ -1,33 +1,46 @@
 #!/usr/bin/env nextflow
 
 // Define input parameters
-params.read1 = '/mnt/c/my_nextflow_work/pipeline/20280_5#33_1.fastq'
-params.read2 = '/mnt/c/my_nextflow_work/pipeline/20280_5#33_2.fastq'
+params.reads_dir = '/mnt/c/my_nextflow_work/pipeline/reads/'  // Directory with compressed reads
 params.kraken_db = '/mnt/c/my_nextflow_work/pipeline/minikraken2_v1_8GB'
-params.bracken_db = '/mnt/c/my_nextflow_work/pipeline/Bracken'
 params.classification_level = 'S'
 params.threshold = 10
 params.read_len = 150
 
+// Debug: Check if directory exists
+if (!file(params.reads_dir).exists()) {
+    error "ERROR: Reads directory '${params.reads_dir}' does not exist!"
+}
+
+// Create a channel with all FASTQ.GZ file pairs
+Channel
+    .fromFilePairs("${params.reads_dir}/*_{1,2}.fastq.gz", checkIfExists: true)
+    .ifEmpty { error "ERROR: No FASTQ.GZ files found in '${params.reads_dir}'!" }
+    .map { sample_id, reads -> tuple(sample_id, reads[0], reads[1]) }  // FIX: Unpack the list
+    .set { reads_ch }
+
+// Debug: Print detected files
+reads_ch.view { sample_id, r1, r2 -> "FOUND: Sample ${sample_id}, Read1: ${r1}, Read2: ${r2}" }
+
+// Kraken2 Process
 process kraken2 {
     tag "Kraken2"
     input:
-    tuple path(read1), path(read2)
-
+    tuple val(sample_id), path(read1), path(read2)
     output:
-    path "${read1.simpleName}.kreport", emit: kreport
-
+    path "${sample_id}.kreport", emit: kreport 
+    cpus 10         
     script:
     """
-    echo "Running Kraken2 on ${read1} and ${read2}..."
-    ls -lh ${read1} ${read2}  # Debugging: Check file existence
-    kraken2 --db ${params.kraken_db} --paired ${read1} ${read2} --report ${read1.simpleName}.kreport --output /dev/null
-    ls -lh ${read1.simpleName}.kreport  # Debugging: Check if output was created
+    echo "Running Kraken2 on ${sample_id}..."
+    kraken2 --db ${params.kraken_db} --paired ${read1} ${read2} --report ${sample_id}.kreport --output /dev/null --memory-mapping --threads 10
     """
 }
 
+// Bracken Process
 process bracken {
     tag "Bracken"
+
     input:
     path kreport
 
@@ -37,17 +50,16 @@ process bracken {
     script:
     """
     echo "Running Bracken on ${kreport}..."
-    python /mnt/c/my_nextflow_work/pipeline/Bracken/src/est_abundance.py -i ${kreport} \
-        -k ${params.kraken_db}/database${params.read_len}mers.kmer_distrib \
-        -o ${kreport.baseName}.bracken \
-        -l ${params.classification_level} -t ${params.threshold}
+    bracken -d ${params.kraken_db} -i ${kreport} -o ${kreport.baseName}.bracken -l ${params.classification_level} -t ${params.threshold}
     """
 }
 
+// Generate Summary Report
 process generate_summary_report {
     tag "Generate Summary"
+
     input:
-    path bracken_reports
+    path bracken_output
 
     output:
     path "summary_report.txt"
@@ -55,28 +67,16 @@ process generate_summary_report {
     script:
     """
     echo "Generating summary of GBS abundance..." > summary_report.txt
-    for report in \$(ls ${bracken_reports}); do
-        echo "Processing \${report}..." >> summary_report.txt
-        cat \${report} >> summary_report.txt
+    for report in ${bracken_output}; do
+        echo "Processing ${report}..." >> summary_report.txt
+        cat ${report} >> summary_report.txt
     done
     """
 }
 
+// Workflow Execution
 workflow {
-    if (!file(params.read1).exists() || !file(params.read2).exists()) {
-        throw new Exception("ERROR: One or both input files do not exist.")
-    }
-    if (!file(params.kraken_db).exists()) {
-        throw new Exception("ERROR: Kraken2 database not found.")
-    }
-    if (!file(params.bracken_db).exists()) {
-        throw new Exception("ERROR: Bracken database not found.")
-    }
-
-    reads = tuple(file(params.read1), file(params.read2))
-
-    kraken_results = kraken2(reads)
-    bracken_results = bracken(kraken_results)  // Pass full output
-    generate_summary_report(bracken_results)  // Use full channel
+    kraken_results = kraken2(reads_ch)
+    bracken_results = bracken(kraken_results.kreport)
+    generate_summary_report(bracken_results.bracken_output)
 }
-
