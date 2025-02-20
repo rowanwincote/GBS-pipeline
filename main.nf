@@ -19,9 +19,6 @@ Channel
     .map { sample_id, reads -> tuple(sample_id, reads[0], reads[1]) }  // FIX: Unpack the list
     .set { reads_ch }
 
-// Create a channel for Kraken2 database
-kraken_db_ch = Channel.fromPath(params.kraken_db)
-
 // Debug: Print detected files
 reads_ch.view { sample_id, r1, r2 -> "FOUND: Sample ${sample_id}, Read1: ${r1}, Read2: ${r2}" }
 
@@ -92,7 +89,7 @@ process generate_summary_report {
 
 // Workflow Execution
 workflow {
-    kraken_results = kraken2(reads_ch, kraken_db_ch)
+    kraken_results = kraken2(reads_ch, params.kraken_db)
     bracken_results = bracken(kraken_results.kreport, kraken_db_ch)
     generate_summary_report(bracken_results.bracken_output)
 }
