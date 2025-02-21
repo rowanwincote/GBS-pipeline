@@ -16,7 +16,7 @@ if (!file(params.reads_dir).exists()) {
 Channel
     .fromFilePairs("${params.reads_dir}/*_{1,2}.fastq.gz", checkIfExists: true)
     .ifEmpty { error "ERROR: No FASTQ.GZ files found in '${params.reads_dir}'!" }
-    .map { sample_id, reads -> tuple(sample_id, reads[0], reads[1]) }  // FIX: Unpack the list
+    .map { sample_id, reads -> tuple(sample_id, reads[0], reads[1]) }
     .set { reads_ch }
 
 // Debug: Print detected files
@@ -28,7 +28,7 @@ process kraken2 {
 
     input:
     tuple val(sample_id), path(read1), path(read2)
-    path kraken_db
+    val kraken_db  // Use 'val' instead of 'path'
 
     output:
     path "${sample_id}.kreport", emit: kreport 
@@ -48,7 +48,7 @@ process bracken {
 
     input:
     path kreport
-    path kraken_db
+    val kraken_db  // Use 'val' instead of 'path'
 
     output:
     path "${kreport.baseName}.bracken", emit: bracken_output
@@ -58,9 +58,9 @@ process bracken {
     echo "Running Bracken on ${kreport}..."
     bracken -d ${kraken_db} -i ${kreport} -o ${kreport.baseName}.bracken -l ${params.classification_level} -t ${params.threshold}
     """
+    bracken_output.view { file -> "Emitting: ${file}" }
 }
 
-// Generate Summary Report
 process generate_summary_report {
     tag "Generate Summary"
 
@@ -90,6 +90,7 @@ process generate_summary_report {
 // Workflow Execution
 workflow {
     kraken_results = kraken2(reads_ch, params.kraken_db)
-    bracken_results = bracken(kraken_results.kreport, kraken_db_ch)
+    bracken_results = bracken(kraken_results.kreport, params.kraken_db)
     generate_summary_report(bracken_results.bracken_output)
 }
+
