@@ -1,54 +1,35 @@
 #!/usr/bin/env nextflow
 
 // Define input parameters
-params.reads_dir = '~/rw2074/pipeline/reads/'  // Directory with compressed reads
-params.kraken_db = '~/rw2074/pipeline/minikraken2_v1_8GB'  // Kraken2 database
+params.read1 = '/mnt/c/my_nextflow_work/pipeline/reads/SRR8541972_1.fastq.gz'
+params.read2 = '/mnt/c/my_nextflow_work/pipeline/reads/SRR8541972_2.fastq.gz'
+params.kraken_db = '/mnt/c/my_nextflow_work/pipeline/minikraken2_v1_8GB'
+params.bracken_db = '/mnt/c/my_nextflow_work/pipeline/Bracken'
 params.classification_level = 'S'
 params.threshold = 10
 params.read_len = 150
 
-// Debug: Check if directory exists
-if (!file(params.reads_dir).exists()) {
-    error "ERROR: Reads directory '${params.reads_dir}' does not exist!"
-}
-
-// Create a channel with all FASTQ.GZ file pairs
-Channel
-    .fromFilePairs("${params.reads_dir}/*_{1,2}.fastq.gz", checkIfExists: true)
-    .ifEmpty { error "ERROR: No FASTQ.GZ files found in '${params.reads_dir}'!" }
-    .map { sample_id, reads -> tuple(sample_id, reads[0], reads[1]) }
-    .set { reads_ch }
-
-// Debug: Print detected files
-reads_ch.view { sample_id, r1, r2 -> "FOUND: Sample ${sample_id}, Read1: ${r1}, Read2: ${r2}" }
-
-// Kraken2 Process
 process kraken2 {
     tag "Kraken2"
-
     input:
-    tuple val(sample_id), path(read1), path(read2)
-    val kraken_db  // Use 'val' instead of 'path'
+    tuple path(read1), path(read2)
 
     output:
-    path "${sample_id}.kreport", emit: kreport 
-
-    cpus 10
+    path "${read1.simpleName}.kreport", emit: kreport
 
     script:
     """
-    echo "Running Kraken2 on ${sample_id}..."
-    kraken2 --db ${kraken_db} --paired ${read1} ${read2} --report ${sample_id}.kreport --output /dev/null --memory-mapping --threads 10
+    echo "Running Kraken2 on ${read1} and ${read2}..."
+    ls -lh ${read1} ${read2}  # Debugging: Check file existence
+    kraken2 --db ${params.kraken_db} --paired ${read1} ${read2} --report ${read1.simpleName}.kreport --output /dev/null
+    ls -lh ${read1.simpleName}.kreport  # Debugging: Check if output was created
     """
 }
 
-// Bracken Process
 process bracken {
     tag "Bracken"
-
     input:
     path kreport
-    val kraken_db  // Use 'val' instead of 'path'
 
     output:
     path "${kreport.baseName}.bracken", emit: bracken_output
@@ -56,16 +37,17 @@ process bracken {
     script:
     """
     echo "Running Bracken on ${kreport}..."
-    bracken -d ${kraken_db} -i ${kreport} -o ${kreport.baseName}.bracken -l ${params.classification_level} -t ${params.threshold}
+    python /mnt/c/my_nextflow_work/pipeline/Bracken/src/est_abundance.py -i ${kreport} \
+        -k ${params.kraken_db}/database${params.read_len}mers.kmer_distrib \
+        -o ${kreport.baseName}.bracken \
+        -l ${params.classification_level} -t ${params.threshold}
     """
-    bracken_output.view { file -> "Emitting: ${file}" }
 }
 
 process generate_summary_report {
     tag "Generate Summary"
-
     input:
-    tuple val(sample_id), path(bracken_output)
+    path bracken_reports
 
     output:
     path "summary_report.txt"
@@ -73,24 +55,27 @@ process generate_summary_report {
     script:
     """
     echo "Generating summary of GBS abundance..." > summary_report.txt
-    for report in *.bracken; do
-        if [[ -s "\$report" ]]; then
-            echo "-------------------------" >> summary_report.txt
-            echo "Sample: \$(basename \$report .bracken)" >> summary_report.txt
-            echo "-------------------------" >> summary_report.txt
-            cat \$report >> summary_report.txt
-            echo "" >> summary_report.txt  # Adds a newline for readability
-        else
-            echo "WARNING: \$(basename \$report .bracken) has an empty Bracken report!" >> summary_report.txt
-        fi
+    for report in \$(ls ${bracken_reports}); do
+        echo "Processing \${report}..." >> summary_report.txt
+        cat \${report} >> summary_report.txt
     done
     """
 }
 
-// Workflow Execution
 workflow {
-    kraken_results = kraken2(reads_ch, params.kraken_db)
-    bracken_results = bracken(kraken_results.kreport, params.kraken_db)
-    generate_summary_report(bracken_results.bracken_output)
-}
+    if (!file(params.read1).exists() || !file(params.read2).exists()) {
+        throw new Exception("ERROR: One or both input files do not exist.")
+    }
+    if (!file(params.kraken_db).exists()) {
+        throw new Exception("ERROR: Kraken2 database not found.")
+    }
+    if (!file(params.bracken_db).exists()) {
+        throw new Exception("ERROR: Bracken database not found.")
+    }
 
+    reads = tuple(file(params.read1), file(params.read2))
+
+    kraken_results = kraken2(reads)
+    bracken_results = bracken(kraken_results)  // Pass full output
+    generate_summary_report(bracken_results)  // Use full channel
+}
